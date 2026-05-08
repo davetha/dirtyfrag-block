@@ -1,0 +1,52 @@
+// dirtyfrag-block.stp
+//
+// Mitigation for DirtyFrag / Copy-Fail-2 (xfrm ESP-in-UDP MSG_SPLICE_PAGES
+// no-COW fast path).  Strips MSG_SPLICE_PAGES from msg->msg_flags at
+// udp_sendmsg / udpv6_sendmsg entry before __ip_append_data can attach
+// externally-backed pipe pages directly to skb frags.  The kernel falls back
+// to the copy path, so ESP in-place decrypt never operates over page-cache
+// memory.  The send still succeeds — only the zero-copy optimisation is lost.
+//
+// Covers: V4bel/dirtyfrag (xfrm variant)
+//         0xdeadbeefnetwork/Copy_Fail2-Electric_Boogaloo
+//         rxrpc variant (probe is optional — skipped if rxrpc.ko absent)
+//
+// Requires: kernel >= 6.5, kernel-debuginfo, guru mode (-g)
+//
+// Build:   stap -p4 -m dirtyfrag_block -g dirtyfrag-block.stp
+// Load:    staprun dirtyfrag_block.ko
+// Test:    python3 test-dirtyfrag-block.py
+// Unload:  staprun -d dirtyfrag_block
+
+%{
+#include <linux/socket.h>
+#ifndef MSG_SPLICE_PAGES
+#define MSG_SPLICE_PAGES 0x8000000
+#endif
+%}
+
+global strips
+
+probe begin {
+    printf("dirtyfrag-block: armed — stripping MSG_SPLICE_PAGES from UDP/RxRPC sendmsg\n")
+}
+
+probe kernel.function("udp_sendmsg"),
+      kernel.function("udpv6_sendmsg") {
+    if ($msg != 0 && ($msg->msg_flags & %{ MSG_SPLICE_PAGES %})) {
+        $msg->msg_flags = $msg->msg_flags & ~%{ MSG_SPLICE_PAGES %}
+        strips++
+    }
+}
+
+// Optional — silently skipped if rxrpc.ko is not loaded
+probe kernel.function("rxrpc_sendmsg") ? {
+    if ($msg != 0 && ($msg->msg_flags & %{ MSG_SPLICE_PAGES %})) {
+        $msg->msg_flags = $msg->msg_flags & ~%{ MSG_SPLICE_PAGES %}
+        strips++
+    }
+}
+
+probe end {
+    printf("dirtyfrag-block: disarmed — stripped MSG_SPLICE_PAGES %d time(s)\n", strips)
+}

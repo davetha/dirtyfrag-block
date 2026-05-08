@@ -1,0 +1,16 @@
+[Unit]
+Description=DirtyFrag / Copy-Fail-2 block (MSG_SPLICE_PAGES UDP mitigation)
+Documentation=https://github.com/V4bel/dirtyfrag
+After=local-fs.target
+ConditionPathExists=/var/lib/dirtyfrag-block/dirtyfrag_block.ko
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/staprun /var/lib/dirtyfrag-block/dirtyfrag_block.ko
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target
