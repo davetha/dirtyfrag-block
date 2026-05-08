@@ -34,8 +34,13 @@ cmd_install_deps() {
     info "Installing SystemTap and kernel debug packages"
     PKG_MGR=yum
     command -v dnf &>/dev/null && PKG_MGR=dnf
-    $PKG_MGR install -y systemtap systemtap-runtime \
-        "kernel-devel-$(uname -r)" "kernel-debuginfo-$(uname -r)"
+    $PKG_MGR install -y systemtap systemtap-runtime "kernel-devel-$(uname -r)"
+    # kernel-debuginfo lives in a debuginfo repo; debuginfo-install handles the repo enable
+    if command -v dnf &>/dev/null; then
+        dnf debuginfo-install -y "kernel-$(uname -r)"
+    else
+        yum install -y "kernel-debuginfo-$(uname -r)"
+    fi
 }
 
 cmd_build() {
@@ -47,9 +52,13 @@ cmd_build() {
     TMPDIR=$(mktemp -d)
     trap 'rm -rf "$TMPDIR"' EXIT
 
-    stap -p4 -m "$MODNAME" -g "$STP_DST" -r "$(uname -r)" -o "${TMPDIR}/${MODNAME}.ko" \
-        || die "stap compilation failed"
+    # stap -p4 -m writes modname.ko to CWD regardless of -o; cd into TMPDIR first
+    pushd "$TMPDIR" >/dev/null
+    stap -p4 -m "$MODNAME" -g "$STP_DST" -r "$(uname -r)" \
+        || { popd >/dev/null; die "stap compilation failed"; }
+    popd >/dev/null
 
+    [[ -f "${TMPDIR}/${MODNAME}.ko" ]] || die "stap produced no .ko — check stap output above"
     mkdir -p "$LIB_DIR"
     install -m 600 "${TMPDIR}/${MODNAME}.ko" "$KO_DST"
     info "Module installed to $KO_DST"
