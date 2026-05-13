@@ -7,9 +7,11 @@
 // to the copy path, so ESP in-place decrypt never operates over page-cache
 // memory.  The send still succeeds — only the zero-copy optimisation is lost.
 //
-// Covers: V4bel/dirtyfrag (xfrm variant)
+// Covers: V4bel/dirtyfrag (xfrm ESP-in-UDP variant)
 //         0xdeadbeefnetwork/Copy_Fail2-Electric_Boogaloo
 //         rxrpc variant (probe is optional — skipped if rxrpc.ko absent)
+//         v12-security/fragnesia (xfrm ESP-in-TCP variant — untested,
+//             probe is optional and skipped if espintcp is not built/loaded)
 //
 // Requires: kernel >= 6.5, kernel-debuginfo, guru mode (-g)
 //
@@ -41,6 +43,17 @@ probe kernel.function("udp_sendmsg"),
 
 // Optional — silently skipped if rxrpc.ko is not loaded
 probe kernel.function("rxrpc_sendmsg") ? {
+    if ($msg != 0 && ($msg->msg_flags & %{ MSG_SPLICE_PAGES %})) {
+        $msg->msg_flags = $msg->msg_flags & ~%{ MSG_SPLICE_PAGES %}
+        strips++
+    }
+}
+
+// Optional — covers v12-security/fragnesia (ESP-in-TCP). Skipped silently
+// if espintcp is not built into the running kernel. UNTESTED: confirm that
+// MSG_SPLICE_PAGES is still set in msg_flags at this entry point on your
+// kernel (splice_to_socket -> espintcp_sendmsg) before relying on it.
+probe kernel.function("espintcp_sendmsg") ? {
     if ($msg != 0 && ($msg->msg_flags & %{ MSG_SPLICE_PAGES %})) {
         $msg->msg_flags = $msg->msg_flags & ~%{ MSG_SPLICE_PAGES %}
         strips++
