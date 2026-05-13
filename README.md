@@ -7,6 +7,7 @@ Runtime mitigation for the DirtyFrag / Copy-Fail-2 Linux kernel vulnerability. U
 Blocks:
 - [V4bel/dirtyfrag](https://github.com/V4bel/dirtyfrag) — xfrm ESP-in-UDP variant (requires userns)
 - [0xdeadbeefnetwork/Copy_Fail2-Electric_Boogaloo](https://github.com/0xdeadbeefnetwork/Copy_Fail2-Electric_Boogaloo) — no-userns variant
+- [v12-security/fragnesia](https://github.com/v12-security/pocs/tree/main/fragnesia) — xfrm ESP-in-TCP variant (espintcp ULP). **Untested** — probe is optional and silently skipped if `CONFIG_INET_ESPINTCP` is not enabled; verify on a kernel that has it before relying on this leg.
 
 Affected kernels: 6.5 and later (where `MSG_SPLICE_PAGES` UDP support was introduced).
 
@@ -14,7 +15,7 @@ Affected kernels: 6.5 and later (where `MSG_SPLICE_PAGES` UDP support was introd
 
 The upstream fix ([f4c50a4](https://github.com/torvalds/linux/commit/f4c50a4034e62ab75f1d5cdd191dd5f9c77fdff4)) adds a `SKBFL_SHARED_FRAG` marker on the producer side and checks it on the consumer side to force `skb_cow_data()`. This mitigation intercepts at the producer — probing `udp_sendmsg` and `udpv6_sendmsg` at entry and clearing `MSG_SPLICE_PAGES` from `msg->msg_flags` before `__ip_append_data` runs. The kernel falls back to the copy path and the send still succeeds; only the zero-copy optimisation is lost.
 
-`rxrpc_sendmsg` is probed with the same logic and is silently skipped if `rxrpc.ko` is not loaded.
+`rxrpc_sendmsg` is probed with the same logic and is silently skipped if `rxrpc.ko` is not loaded. `espintcp_sendmsg` is probed the same way for the ESP-in-TCP (fragnesia) variant and silently skipped if espintcp is not built into the kernel — this leg has not been validated against a live PoC yet.
 
 ## Files
 
