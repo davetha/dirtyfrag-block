@@ -9,6 +9,10 @@ Tests:
   2. Regular UDP send/recv still works (copy path not broken)
   3. splice() from a pipe to a UDP socket succeeds (flag stripped, copy path taken)
      — if the module is NOT loaded this also succeeds but via the vulnerable zero-copy path
+  4. splice() from a pipe to a TCP socket succeeds — regression check that the
+     optional espintcp_sendmsg probe (fragnesia mitigation) does not break
+     ordinary TCP splice. Full fragnesia-path verification requires running the
+     PoC against a kernel built with CONFIG_INET_ESPINTCP — not done here.
 
 Exit codes:
   0  all tests passed (mitigation active and functional)
@@ -134,6 +138,92 @@ def test_splice_udp():
         check("splice-to-UDP", False, str(e))
 
 
+def test_splice_tcp():
+    """
+    splice() from a pipe to a TCP socket must succeed.
+
+    Regression check for the espintcp_sendmsg probe (fragnesia leg of the
+    mitigation). That probe is scoped to the espintcp ULP and must NOT fire on
+    ordinary TCP sockets — this test confirms regular TCP splice still
+    transports data end-to-end.
+
+    Not a full fragnesia test: actually exercising the espintcp path requires
+    setting up an XFRM SA with TCP_ENCAP_ESPINTCP (CAP_NET_ADMIN + netlink), and
+    a vulnerable kernel built with CONFIG_INET_ESPINTCP. Run the upstream PoC
+    against such a kernel to validate the mitigation end-to-end.
+    """
+    libc_name = ctypes.util.find_library("c")
+    if not libc_name:
+        check("splice-to-TCP", False, "libc not found via ctypes")
+        return
+
+    libc = ctypes.CDLL(libc_name, use_errno=True)
+    libc.splice.restype = ctypes.c_ssize_t
+    libc.splice.argtypes = [
+        ctypes.c_int, ctypes.POINTER(ctypes.c_int64),
+        ctypes.c_int, ctypes.POINTER(ctypes.c_int64),
+        ctypes.c_size_t, ctypes.c_uint,
+    ]
+
+    listen_sock = None
+    accept_sock = None
+    send_sock = None
+    pipe_r = pipe_w = None
+    try:
+        listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listen_sock.bind(("127.0.0.1", 0))
+        listen_sock.listen(1)
+        port = listen_sock.getsockname()[1]
+
+        send_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        send_sock.connect(("127.0.0.1", port))
+
+        accept_sock, _ = listen_sock.accept()
+        accept_sock.settimeout(2)
+
+        pipe_r, pipe_w = os.pipe()
+        payload = b"dirtyfrag-splice-tcp-test"
+        os.write(pipe_w, payload)
+        os.close(pipe_w)
+        pipe_w = None
+
+        ret = libc.splice(pipe_r, None, send_sock.fileno(), None,
+                          len(payload), SPLICE_F_MORE)
+        err = ctypes.get_errno()
+
+        if ret < 0:
+            detail = errno.errorcode.get(err, str(err))
+            check("splice-to-TCP", False, f"splice() returned {ret}, errno={detail}")
+            return
+
+        # TCP is a stream — may take multiple recvs to drain
+        received = b""
+        while len(received) < len(payload):
+            chunk = accept_sock.recv(256)
+            if not chunk:
+                break
+            received += chunk
+
+        check("splice-to-TCP", received == payload,
+              "data received correctly" if received == payload
+              else f"got {received!r}, expected {payload!r}")
+    except Exception as e:
+        check("splice-to-TCP", False, str(e))
+    finally:
+        for fd in (pipe_r, pipe_w):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        for s in (send_sock, accept_sock, listen_sock):
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+
 def main():
     print(f"dirtyfrag-block mitigation test")
     print(f"{'─' * 45}")
@@ -142,6 +232,7 @@ def main():
         test_module_loaded()
         test_udp_works()
         test_splice_udp()
+        test_splice_tcp()
     except Exception as e:
         print(f"RUNTIME ERROR: {e}", file=sys.stderr)
         sys.exit(2)
